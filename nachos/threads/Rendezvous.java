@@ -1,34 +1,38 @@
 package nachos.threads;
-
+import java.util.*;
 import nachos.machine.*;
 
-/**
- * A <i>Rendezvous</i> allows threads to synchronously exchange values.
- */
 public class Rendezvous {
-    /**
-     * Allocate a new Rendezvous.
-     */
-    public Rendezvous () {
+    private static class Slot {
+        int tag; Object value; KThread thread;
+        Slot(int tag,Object value,KThread th){this.tag=tag;this.value=value;this.thread=th;}
     }
+    private Lock lock = new Lock();
+    private HashMap<Integer,LinkedList<Slot>> waiting = new HashMap<>();
 
-    /**
-     * Synchronously exchange a value with another thread.  The first
-     * thread A (with value X) to exhange will block waiting for
-     * another thread B (with value Y).  When thread B arrives, it
-     * will unblock A and the threads will exchange values: value Y
-     * will be returned to thread A, and value X will be returned to
-     * thread B.
-     *
-     * Different integer tags are used as different, parallel
-     * synchronization points (i.e., threads synchronizing at
-     * different tags do not interact with each other).  The same tag
-     * can also be used repeatedly for multiple exchanges.
-     *
-     * @param tag the synchronization tag.
-     * @param value the integer to exchange.
-     */
-    public int exchange (int tag, int value) {
-	return 0;
+    public Object exchange(int tag,Object myVal){
+        lock.acquire();
+        LinkedList<Slot> q = waiting.computeIfAbsent(tag,k->new LinkedList<>());
+
+        if (!q.isEmpty()) {                    // partner ready
+            Slot partner = q.removeFirst();
+            Object ret = partner.value;
+            partner.value = myVal;             // give mine to partner
+            partner.thread.ready();            // wake partner
+            lock.release();
+            return ret;
+        }
+
+        /* I’m first: park myself */
+        Slot me = new Slot(tag,myVal,KThread.currentThread());
+        q.add(me);
+        boolean intStat = Machine.interrupt().disable();
+        lock.release();
+        KThread.sleep();                       // block
+        Machine.interrupt().restore(intStat);
+
+        // awoken by partner, 'value' field now contains partner’s gift
+        return me.value;
     }
 }
+

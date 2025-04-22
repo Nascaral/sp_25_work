@@ -1,5 +1,5 @@
 package nachos.threads;
-
+import java.util.*;
 import nachos.machine.*;
 
 /**
@@ -38,7 +38,13 @@ import nachos.machine.*;
  * 
  * </blockquote>
  */
+
+
 public class KThread {
+
+private LinkedList<KThread> joiners = new LinkedList<>();
+private boolean finished = false;
+
 	/**
 	 * Get the current thread.
 	 * 
@@ -199,6 +205,11 @@ public class KThread {
 		Machine.autoGrader().finishingCurrentThread();
 
 		Lib.assertTrue(toBeDestroyed == null);
+	
+		currentThread.finished = true;
+		while(!currentThread.joiners.isEmpty())
+			currentThread.joiners.removeFirst().ready();
+	
 		toBeDestroyed = currentThread;
 
 		currentThread.status = statusFinished;
@@ -281,12 +292,20 @@ public class KThread {
 	 * is not guaranteed to return. This thread must not be the current thread.
 	 */
 	public void join() {
-		Lib.debug(dbgThread, "Joining to thread: " + toString());
+Lib.assertTrue(this != currentThread);
+boolean intStat = Machine.interrupt().disable();
 
-		Lib.assertTrue(this != currentThread);
+if(finished) {
+	Machine.interrupt().restore(intStat);
+	return;
 
 	}
-
+for (KThread t : joiners)
+	Lib.assertTrue(t != currentThread, "Join called twice");
+joiners.add(currentThread);
+currentThread.sleep();
+Machine.interrupt().restore(intStat);
+	}
 	/**
 	 * Create the idle thread. Whenever there are no threads ready to be run,
 	 * and <tt>runNextThread()</tt> is called, it will run the idle thread. The

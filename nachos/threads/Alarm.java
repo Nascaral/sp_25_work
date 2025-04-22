@@ -1,5 +1,5 @@
 package nachos.threads;
-
+import java.util.*;
 import nachos.machine.*;
 
 /**
@@ -7,6 +7,24 @@ import nachos.machine.*;
  * until a certain time.
  */
 public class Alarm {
+private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
+long now = Machine.timer().getTime();
+
+private static class SleepEntry implements Comparable<SleepEntry> {
+    KThread thread;
+    long wakeTime;
+
+    SleepEntry(KThread thread, long wakeTime) {
+        this.thread = thread;
+        this.wakeTime = wakeTime;
+    }
+
+    @Override
+    public int compareTo(SleepEntry other) {
+        return Long.compare(this.wakeTime, other.wakeTime);
+    }
+}
+
 	/**
 	 * Allocate a new Alarm. Set the machine's timer interrupt handler to this
 	 * alarm's callback.
@@ -21,6 +39,12 @@ public class Alarm {
 			}
 		});
 	}
+public boolean cancel(KThread t){
+    boolean intStat = Machine.interrupt().disable();
+    boolean removed = sleepers.removeIf(e -> e.thread==t);
+    Machine.interrupt().restore(intStat);
+    return removed;
+}
 
 	/**
 	 * The timer interrupt handler. This is called by the machine's timer
@@ -30,6 +54,7 @@ public class Alarm {
 	 */
 	public void timerInterrupt() {
 		KThread.currentThread().yield();
+		Condition2.handleTimeouts(now);
 	}
 
 	/**
@@ -60,7 +85,4 @@ public class Alarm {
 	 * <p>
 	 * @param thread the thread whose timer should be cancelled.
 	 */
-        public boolean cancel(KThread thread) {
-		return false;
-	}
 }

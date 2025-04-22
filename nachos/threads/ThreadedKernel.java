@@ -51,7 +51,64 @@ public class ThreadedKernel extends Kernel {
 		SynchList.selfTest();
 		if (Machine.bank() != null) {
 			ElevatorBank.selfTest();
+	
+
 		}
+
+		new KThread(() -> {
+    long start = Machine.timer().getTime();
+    System.out.println("sleep 500 ticks…");
+    ThreadedKernel.alarm.waitUntil(500);
+    System.out.println("slept → "+(Machine.timer().getTime()-start)+" ticks");
+}).setName("AlarmTest").fork();
+
+KThread child = new KThread(() -> {
+    System.out.println("child running");
+    KThread.yield();
+    System.out.println("child done");
+}).setName("C");
+
+KThread parent = new KThread(() -> {
+    System.out.println("parent waiting");
+    child.join();
+    System.out.println("parent resumes");
+}).setName("P");
+
+child.fork(); parent.fork();
+Lock l = new Lock();
+Condition2 cv = new Condition2(l);
+final int[] counter = {0};
+
+KThread waiter = new KThread(() -> {
+    l.acquire();
+    while (counter[0]==0) cv.sleep();  // should block
+    System.out.println("waiter sees counter="+counter[0]);
+    l.release();
+}).setName("Waiter");
+
+KThread signaler = new KThread(() -> {
+    l.acquire();
+    counter[0]=42;
+    cv.wake();                         // release waiter
+    l.release();
+}).setName("Signaler");
+
+waiter.fork(); signaler.fork();
+Rendezvous rv = new Rendezvous();
+KThread A = new KThread(() -> {
+    int got = (int) rv.exchange(1, 111);
+    System.out.println("A got "+got);
+});
+KThread B = new KThread(() -> {
+    int got = (int) rv.exchange(1, 222);
+    System.out.println("B got "+got);
+});
+A.fork(); B.fork();
+
+
+
+
+
 	}
 
 	/**
