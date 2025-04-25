@@ -36,8 +36,12 @@ public class Rendezvous {
             Slot partner = queue.removeFirst();
             int ret      = partner.item;   // value to return to me
             partner.item = myItem;         // give mine to partner
+            lock.release();                // release lock before waking partner
+            
+            boolean intStatus = Machine.interrupt().disable();
             partner.thread.ready();        // wake partner
-            lock.release();
+            Machine.interrupt().restore(intStatus);
+            
             return ret;
         }
 
