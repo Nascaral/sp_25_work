@@ -7,21 +7,21 @@ import nachos.machine.*;
  * until a certain time.
  */
 public class Alarm {
+    private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
 
-private static class SleepEntry implements Comparable<SleepEntry> {
-    final KThread thread;
-    final long wakeTime;
+    private static class SleepEntry implements Comparable<SleepEntry> {
+        final KThread thread;
+        final long wakeTime;
 
-    SleepEntry(KThread t, long Time) {
-        thread = t;
-        wakeTime = Time;
+        SleepEntry(KThread t, long Time) {
+            thread = t;
+            wakeTime = Time;
+        }
+
+        public int compareTo(SleepEntry other) {
+            return Long.compare(wakeTime, other.wakeTime);
+        }
     }
-
-   
-    public int compareTo(SleepEntry other) {
-        return Long.compare(wakeTime, other.wakeTime);
-    }
-}
 
 	/**
 	 * Allocate a new Alarm. Set the machine's timer interrupt handler to this
@@ -56,7 +56,7 @@ private static class SleepEntry implements Comparable<SleepEntry> {
 		boolean intStatus = Machine.interrupt().disable();
 			long time = Machine.timer().getTime();
 		
-		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= now) {
+		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= time) {
 			sleepers.poll().thread.ready();
 			
 		}
@@ -65,8 +65,6 @@ private static class SleepEntry implements Comparable<SleepEntry> {
 	}
 
 	
-private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
-}
         /**
 	 * Cancel any timer set by <i>thread</i>, effectively waking
 	 * up the thread immediately (placing it in the scheduler
