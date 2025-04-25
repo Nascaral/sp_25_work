@@ -7,8 +7,9 @@ import nachos.machine.*;
 
 
 public class Rendezvous {
+    private final Lock lock = new Lock();
+    private final HashMap<Integer, LinkedList<Slot>> waiting = new HashMap<>();
 
-  
     private static class Slot {
         final int     tag;
         int           item;      
@@ -21,10 +22,10 @@ public class Rendezvous {
         }
     }
 
- 
-    public Rendezvous () { 
+    public Rendezvous() {
+    }
 
-    public int exchange (int tag, int myItem) {          // FIX: parameter order & return type
+    public int exchange(int tag, int myItem) {          // FIX: parameter order & return type
         lock.acquire();
 
         LinkedList<Slot> queue =
@@ -52,7 +53,4 @@ public class Rendezvous {
       
         return me.item;
     }
-
-    private final Lock                                    lock     = new Lock();
-    private final HashMap<Integer,LinkedList<Slot>>       waiting  = new HashMap<>();
 }
