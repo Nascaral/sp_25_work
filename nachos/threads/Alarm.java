@@ -1,5 +1,5 @@
 package nachos.threads;
-import java.util.*;
+import java.util.PriorityQueue;
 import nachos.machine.*;
 
 /**
@@ -7,8 +7,6 @@ import nachos.machine.*;
  * until a certain time.
  */
 public class Alarm {
-private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
-long now = Machine.timer().getTime();
 
 private static class SleepEntry implements Comparable<SleepEntry> {
     KThread thread;
@@ -19,7 +17,7 @@ private static class SleepEntry implements Comparable<SleepEntry> {
         this.wakeTime = wakeTime;
     }
 
-    @Override
+   
     public int compareTo(SleepEntry other) {
         return Long.compare(this.wakeTime, other.wakeTime);
     }
@@ -32,6 +30,7 @@ private static class SleepEntry implements Comparable<SleepEntry> {
 	 * <p>
 	 * <b>Note</b>: Nachos will not function correctly with more than one alarm.
 	 */
+	private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
 	public Alarm() {
 		Machine.timer().setInterruptHandler(new Runnable() {
 			public void run() {
@@ -39,12 +38,8 @@ private static class SleepEntry implements Comparable<SleepEntry> {
 			}
 		});
 	}
-public boolean cancel(KThread t){
-    boolean intStat = Machine.interrupt().disable();
-    boolean removed = sleepers.removeIf(e -> e.thread==t);
-    Machine.interrupt().restore(intStat);
-    return removed;
-}
+
+
 
 	/**
 	 * The timer interrupt handler. This is called by the machine's timer
@@ -53,8 +48,14 @@ public boolean cancel(KThread t){
 	 * should be run.
 	 */
 	public void timerInterrupt() {
-		KThread.currentThread().yield();
-		Condition2.handleTimeouts(now);
+		boolean intStatus = Machine.interrupt().disable();
+			long time = Machine.timer().getTime();
+		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= time) {
+			SleepEntry entry = sleepers.poll();
+			entry.thread.ready();
+		}
+		Machine.interrupt().restore(intStatus);
+		KThread.yeild();
 	}
 
 	/**
@@ -72,10 +73,13 @@ public boolean cancel(KThread t){
 	public void waitUntil(long x) {
 		// for now, cheat just to get something working (busy waiting is bad)
 		long wakeTime = Machine.timer().getTime() + x;
-		while (wakeTime > Machine.timer().getTime())
-			KThread.yield();
+		
+		boolean intStatus = Machine.interrupt().disable();
+		sleepers.add(new SleepEntry(wakeTime, KThread.currentThread()));
+        KThread.sleep(); // Block the current thread
+        Machine.interrupt().restore(intStatus);
 	}
-
+}
         /**
 	 * Cancel any timer set by <i>thread</i>, effectively waking
 	 * up the thread immediately (placing it in the scheduler
