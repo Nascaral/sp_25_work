@@ -47,8 +47,8 @@ public class Alarm {
         long wakeTime = Machine.timer().getTime() + x;
 
         boolean intStatus = Machine.interrupt().disable();
-        sleepers.add(new SleepEntry(KThread.currentThread(), wakeTime));   // FIX: param order
-        KThread.currentThread().sleep();
+        sleepers.add(new SleepEntry(KThread.currentThread(), wakeTime));
+        KThread.sleep();
         Machine.interrupt().restore(intStatus);
     }
 	
@@ -57,22 +57,12 @@ public class Alarm {
 			long time = Machine.timer().getTime();
 		
 		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= time) {
-			sleepers.poll().thread.ready();
-			
+			KThread thread = sleepers.poll().thread;
+			thread.ready();
 		}
 		Machine.interrupt().restore(intStatus);
 		KThread.yield();
 	}
-}
 
 	
-        /**
-	 * Cancel any timer set by <i>thread</i>, effectively waking
-	 * up the thread immediately (placing it in the scheduler
-	 * ready set) and returning true.  If <i>thread</i> has no
-	 * timer set, return false.
-	 * 
-	 * <p>
-	 * @param thread the thread whose timer should be cancelled.
-	 */
-
+}
