@@ -1,38 +1,40 @@
 package nachos.threads;
-import java.util.*;
+
 import nachos.machine.*;
 
 public class Rendezvous {
-    private static class Slot {
-        int tag; Object value; KThread thread;
-        Slot(int tag,Object value,KThread th){this.tag=tag;this.value=value;this.thread=th;}
-    }
-    private Lock lock = new Lock();
-    private HashMap<Integer,LinkedList<Slot>> waiting = new HashMap<>();
-
-    public Object exchange(int tag,Object myVal){
-        lock.acquire();
-        LinkedList<Slot> q = waiting.computeIfAbsent(tag,k->new LinkedList<>());
-
-        if (!q.isEmpty()) {                    // partner ready
-            Slot partner = q.removeFirst();
-            Object ret = partner.value;
-            partner.value = myVal;             // give mine to partner
-            partner.thread.ready();            // wake partner
-            lock.release();
-            return ret;
+   private int[] items;
+    private boolean[] hasItem;
+    private Lock lock;
+    private Condition[] conditions;
+    
+    public Rendezvous(int n) {
+        items = new int[n];
+        hasItem = new boolean[n];
+        lock = new Lock();
+        conditions = new Condition[n];
+        for( int i =0; i < n; i++){
+            conditions[i] = new Condition(lock);
         }
+    }
 
-        /* I’m first: park myself */
-        Slot me = new Slot(tag,myVal,KThread.currentThread());
-        q.add(me);
-        boolean intStat = Machine.interrupt().disable();
-        lock.release();
-        KThread.sleep();                       // block
-        Machine.interrupt().restore(intStat);
+    public int exchange(int myItem, int tag){
+        lock.acquire();
 
-        // awoken by partner, 'value' field now contains partner’s gift
-        return me.value;
+        if (hasItem[tag]){
+            int otherItem = items[tag];
+            hasItem[tag] = false;
+            conditions[tag].wake();
+            lock.release();
+            return otherItem;
+        } else {
+            items[tag] = true;
+            conditions[tag].sleep();
+            int otherItem = items[tag];
+            hasItem[tag] = false;
+            lock.release();
+            return otherItem;
+        }
     }
 }
 
