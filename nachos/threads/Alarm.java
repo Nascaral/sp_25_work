@@ -9,17 +9,17 @@ import nachos.machine.*;
 public class Alarm {
 
 private static class SleepEntry implements Comparable<SleepEntry> {
-    KThread thread;
-    long wakeTime;
+    final KThread thread;
+    final long wakeTime;
 
-    SleepEntry(KThread thread, long wakeTime) {
-        this.thread = thread;
-        this.wakeTime = wakeTime;
+    SleepEntry(KThread t, long Time) {
+        thread = t;
+        wakeTime = Time;
     }
 
    
     public int compareTo(SleepEntry other) {
-        return Long.compare(this.wakeTime, other.wakeTime);
+        return Long.compare(wakeTime, other.wakeTime);
     }
 }
 
@@ -30,13 +30,9 @@ private static class SleepEntry implements Comparable<SleepEntry> {
 	 * <p>
 	 * <b>Note</b>: Nachos will not function correctly with more than one alarm.
 	 */
-	private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
+	
 	public Alarm() {
-		Machine.timer().setInterruptHandler(new Runnable() {
-			public void run() {
-				timerInterrupt();
-			}
-		});
+		Machine.timer().setInterruptHandler(this::timerInterrupt);
 	}
 
 
@@ -47,38 +43,29 @@ private static class SleepEntry implements Comparable<SleepEntry> {
 	 * thread to yield, forcing a context switch if there is another thread that
 	 * should be run.
 	 */
-	public void timerInterrupt() {
+    public void waitUntil (long x) {
+        long wakeTime = Machine.timer().getTime() + x;
+
+        boolean intStatus = Machine.interrupt().disable();
+        sleepers.add(new SleepEntry(KThread.currentThread(), wakeTime));   // FIX: param order
+        KThread.currentThread().sleep();
+        Machine.interrupt().restore(intStatus);
+    }
+	
+	private void timerInterrupt() {
 		boolean intStatus = Machine.interrupt().disable();
 			long time = Machine.timer().getTime();
-		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= time) {
-			SleepEntry entry = sleepers.poll();
-			entry.thread.ready();
+		
+		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= now) {
+			sleepers.poll().thread.ready();
+			
 		}
 		Machine.interrupt().restore(intStatus);
-		KThread.yeild();
+		KThread.yield();
 	}
 
-	/**
-	 * Put the current thread to sleep for at least <i>x</i> ticks, waking it up
-	 * in the timer interrupt handler. The thread must be woken up (placed in
-	 * the scheduler ready set) during the first timer interrupt where
-	 * 
-	 * <p>
-	 * <blockquote> (current time) >= (WaitUntil called time)+(x) </blockquote>
-	 * 
-	 * @param x the minimum number of clock ticks to wait.
-	 * 
-	 * @see nachos.machine.Timer#getTime()
-	 */
-	public void waitUntil(long x) {
-		// for now, cheat just to get something working (busy waiting is bad)
-		long wakeTime = Machine.timer().getTime() + x;
-		
-		boolean intStatus = Machine.interrupt().disable();
-		sleepers.add(new SleepEntry(wakeTime, KThread.currentThread()));
-        KThread.sleep(); // Block the current thread
-        Machine.interrupt().restore(intStatus);
-	}
+	
+private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
 }
         /**
 	 * Cancel any timer set by <i>thread</i>, effectively waking
