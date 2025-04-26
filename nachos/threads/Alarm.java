@@ -7,7 +7,6 @@ import nachos.machine.*;
  * until a certain time.
  */
 public class Alarm {
-    private PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
 
     private static class SleepEntry implements Comparable<SleepEntry> {
         final KThread thread;
@@ -59,7 +58,7 @@ public class Alarm {
     }
 	
 	private void timerInterrupt() {
-		boolean intStatus = Machine.interrupt().disable();
+		boolean old = Machine.interrupt().disable();
 			 try {
             while (!sleepers.isEmpty()) {
                 long now = Machine.timer().getTime();   // fresh each pass
