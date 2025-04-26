@@ -64,7 +64,9 @@ public class Alarm {
 		
 		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= time) {
 			KThread thread = sleepers.poll().thread;
+			if(thread.status == KThread.statusBlocked) {
 			thread.ready();
+			}
 		}
 		Machine.interrupt().restore(intStatus);
 		KThread.yield();
