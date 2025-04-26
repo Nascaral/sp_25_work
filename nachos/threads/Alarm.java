@@ -53,7 +53,7 @@ public class Alarm {
 	    try{
         sleepers.add(new SleepEntry(KThread.currentThread(), wakeTime));
         KThread.sleep();
-	    } friday{
+	    } finally{
         Machine.interrupt().restore(intStatus);
 	    }
     }
