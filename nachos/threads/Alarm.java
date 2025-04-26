@@ -44,12 +44,18 @@ public class Alarm {
 	 * should be run.
 	 */
     public void waitUntil (long x) {
+	    if ( x <= 0){
+		    return; // if time is less than or 0 then no need to sleep
+	    }
         long wakeTime = Machine.timer().getTime() + x;
 
         boolean intStatus = Machine.interrupt().disable();
+	    try{
         sleepers.add(new SleepEntry(KThread.currentThread(), wakeTime));
         KThread.sleep();
+	    } friday{
         Machine.interrupt().restore(intStatus);
+	    }
     }
 	
 	private void timerInterrupt() {
