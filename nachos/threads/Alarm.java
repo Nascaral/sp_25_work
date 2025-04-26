@@ -13,13 +13,14 @@ public class Alarm {
         final KThread thread;
         final long wakeTime;
 
-        SleepEntry(KThread t, long Time) {
+        SleepEntry(KThread t, long w) {
             thread = t;
-            wakeTime = Time;
+            wakeTime = w;
         }
 
-        public int compareTo(SleepEntry other) {
-            return Long.compare(wakeTime, other.wakeTime);
+       public int compareTo(SleepEntry o) {
+            return (wakeTime < o.wakeTime) ? -1 :
+                   (wakeTime == o.wakeTime ? 0 : 1);
         }
     }
 
@@ -30,9 +31,10 @@ public class Alarm {
 	 * <p>
 	 * <b>Note</b>: Nachos will not function correctly with more than one alarm.
 	 */
-	
+	 private final PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
 	public Alarm() {
-		Machine.timer().setInterruptHandler(this::timerInterrupt);
+		   Machine.timer().setInterruptHandler(new Runnable() {
+            public void run() { timerInterrupt(); }
 	}
 
 
@@ -47,29 +49,26 @@ public class Alarm {
 	    if ( x <= 0){
 		    return; // if time is less than or 0 then no need to sleep
 	    }
-        long wakeTime = Machine.timer().getTime() + x;
+        long wake = Machine.timer().getTime() + x;
 
-        boolean intStatus = Machine.interrupt().disable();
-	    try{
-        sleepers.add(new SleepEntry(KThread.currentThread(), wakeTime));
+        boolean old = Machine.interrupt().disable();
+        sleepers.add(new SleepEntry(KThread.currentThread(), wake));
         KThread.sleep();
-	    } finally{
-        Machine.interrupt().restore(intStatus);
-	    }
+        Machine.interrupt().restore(old);
     }
 	
 	private void timerInterrupt() {
 		boolean intStatus = Machine.interrupt().disable();
-			long time = Machine.timer().getTime();
-		
-		while(!sleepers.isEmpty() && sleepers.peek().wakeTime <= time) {
-			KThread thread = sleepers.poll().thread;
-			if(thread.status == KThread.statusBlocked) {
-			thread.ready();
-			}
-		}
-		Machine.interrupt().restore(intStatus);
-		KThread.yield();
+			 try {
+            while (!sleepers.isEmpty()) {
+                long now = Machine.timer().getTime();   // fresh each pass
+                if (sleepers.peek().wakeTime > now) break;
+                sleepers.poll().thread.ready();
+            }
+        } finally {
+            Machine.interrupt().restore(old);
+        }
+        KThread.yield();   // let a just-readied thread run
 	}
 
 	
