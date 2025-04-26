@@ -33,8 +33,9 @@ public class Alarm {
 	 */
 	 private final PriorityQueue<SleepEntry> sleepers = new PriorityQueue<>();
 	public Alarm() {
-		   Machine.timer().setInterruptHandler(new Runnable() {
+	Machine.timer().setInterruptHandler(new Runnable() {
             public void run() { timerInterrupt(); }
+		   });
 	}
 
 
