@@ -47,15 +47,14 @@ private static class TimeEntry {
     KThread t; long tgt;
     TimeEntry(KThread t,long tgt){ this.t=t; this.tgt=tgt; }
 }
-private PriorityQueue<TimeEntry> timed = new PriorityQueue<>(
-    (a,b)->Long.compare(a.tgt,b.tgt));
+
 
 public void sleepFor(long x) {
     if (x<=0){ sleep(); return; }
 
     long wake = Machine.timer().getTime()+x;
     boolean intStat = Machine.interrupt().disable();
-    timed.add(new TimeEntry(KThread.currentThread(),wake));
+    globalTimed.add(new TimeEntry(KThread.currentThread(),wake)); // try using global time instead of instance timed queue
     conditionLock.release();
     KThread.sleep();
     conditionLock.acquire();
@@ -63,8 +62,9 @@ public void sleepFor(long x) {
 }
 public static void handleTimeouts(long now){
     boolean intStat = Machine.interrupt().disable();
-    while (!globalTimed.isEmpty() && globalTimed.peek().tgt<=now)
+    while (!globalTimed.isEmpty() && globalTimed.peek().tgt<=now){
         globalTimed.poll().t.ready();
+    }
     Machine.interrupt().restore(intStat);
 }
 
