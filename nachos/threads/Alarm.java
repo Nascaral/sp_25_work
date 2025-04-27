@@ -60,11 +60,12 @@ public class Alarm {
 	private void timerInterrupt() {
 		boolean old = Machine.interrupt().disable();
 			 try {
-            while (!sleepers.isEmpty()) {
-                long now = Machine.timer().getTime();   // fresh each pass
-                if (sleepers.peek().wakeTime > now) break;
+			long now = Machine.timer().getTime();   // fresh each pass
+           		 while (!sleepers.isEmpty()) {
+        	if (sleepers.peek().wakeTime > now) break;
                 sleepers.poll().thread.ready();
             }
+				 Condition2.handleTimeouts(now);
         } finally {
             Machine.interrupt().restore(old);
         }
