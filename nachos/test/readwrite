@@ -1,0 +1,47 @@
+#include "syscall.h"
+
+int main() {
+    char buffer[100];
+    int fd;
+    
+    // Create a test file
+    fd = Create("testfile.txt");
+    if (fd < 0) {
+        Exit(1);
+    }
+    
+    // Test writing to file
+    char *message = "Hello, Nachos!";
+    int bytesWritten = Write(message, strlen(message), fd);
+    if (bytesWritten != strlen(message)) {
+        Exit(1); // Write failed
+    }
+    
+    // Close and reopen to test reading
+    Close(fd);
+    fd = Open("testfile.txt");
+    if (fd < 0) {
+        Exit(1);
+    }
+    
+    // Test reading from file
+    int bytesRead = Read(buffer, strlen(message), fd);
+    if (bytesRead != strlen(message)) {
+        Exit(1); // Read failed
+    }
+    
+    // Test reading with invalid buffer
+    int invalidRead = Read(0, 10, fd);
+    if (invalidRead >= 0) {
+        Exit(1); // Should fail with null buffer
+    }
+    
+    // Test writing with invalid buffer
+    int invalidWrite = Write(0, 10, fd);
+    if (invalidWrite >= 0) {
+        Exit(1); // Should fail with null buffer
+    }
+    
+    Close(fd);
+    Exit(0);
+} 
