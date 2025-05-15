@@ -30,7 +30,8 @@ STDLIB_O = start.o stdio.o stdlib.o
 LIB = assert atoi printf readline stdio strncmp strcat strcmp strcpy strlen memcpy memset rand
 NLIB = libnachos.a
 
-TARGETS = halt sh matmult sort echo cat cp mv rm
+TARGETS = halt sh matmult sort echo cat cp mv rm create open readwrite close unlink exec join exit
+
 
 .SECONDARY: $(patsubst %.c,%.o,$(wildcard *.c))
 
