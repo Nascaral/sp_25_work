@@ -1,0 +1,1 @@
+This text is being written to a file using write syscall

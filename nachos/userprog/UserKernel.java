@@ -29,6 +29,14 @@ public class UserKernel extends ThreadedKernel {
 				exceptionHandler();
 			}
 		});
+
+		// Initialize physical memory management
+		int numPhysPages = Machine.processor().getNumPhysPages();
+		freePages = new boolean[numPhysPages];
+		for (int i = 0; i < numPhysPages; i++) {
+			freePages[i] = true;
+		}
+		pageLock = new Lock();
 	}
 
 	/**
@@ -125,8 +133,43 @@ public class UserKernel extends ThreadedKernel {
 		super.terminate();
 	}
 
+	/**
+	 * Allocate a physical page.
+	 * 
+	 * @return the physical page number, or -1 if no pages are available.
+	 */
+public static int allocatePage() {
+    pageLock.acquire();
+    int page = -1;
+    // Reverse allocation to test non-contiguous page assignment
+    for (int i = freePages.length - 1; i >= 0; i--) {
+        if (freePages[i]) {
+            freePages[i] = false;
+            page = i;
+            break;
+        }
+    }
+    pageLock.release();
+    return page;
+}
+
+	/**
+	 * Free a physical page.
+	 * 
+	 * @param page the physical page number to free.
+	 */
+	public static void freePage(int page) {
+		pageLock.acquire();
+		freePages[page] = true;
+		pageLock.release();
+	}
+
 	/** Globally accessible reference to the synchronized console. */
 	public static SynchConsole console;
+
+	/** Physical memory management */
+	private static boolean[] freePages;
+	private static Lock pageLock;
 
 	// dummy variables to make javac smarter
 	private static Coff dummy1 = null;
