@@ -6,6 +6,9 @@ import nachos.userprog.*;
 import nachos.vm.*;
 
 import java.io.EOFException;
+import java.util.ArrayList;
+import java.util.List;
+
 
 /**
  * Encapsulates the state of a user process that is not contained in its user
@@ -26,6 +29,16 @@ public class UserProcess {
 	private OpenFile[] fileTable = new OpenFile[16];
 	private int nextFileDescriptor = 2; // 0 and 1 are reserved for console
 
+	// Process ID management
+	private static int nextPID = 0;
+	private int pid;
+	private UserProcess parent;
+	private static List<UserProcess> processes = new ArrayList<>();
+	private int exitStatus;
+	private boolean hasExited = false;
+	private Lock exitLock = new Lock();
+	private Condition2 exitCondition = new Condition2(exitLock);
+
 	public UserProcess() {
 		int numPhysPages = Machine.processor().getNumPhysPages();
 		pageTable = new TranslationEntry[numPhysPages];
@@ -33,6 +46,10 @@ public class UserProcess {
 			pageTable[i] = new TranslationEntry(i, i, true, false, false, false);
 		fileTable[0] = UserKernel.console.openForReading();
 		fileTable[1] = UserKernel.console.openForWriting();
+		
+		// Assign process ID
+		pid = nextPID++;
+		processes.add(this);
 	}
 
 	/**
@@ -225,91 +242,104 @@ public class UserProcess {
 	 * @param args the arguments to pass to the executable.
 	 * @return <tt>true</tt> if the executable was successfully loaded.
 	 */
-	private boolean load(String name, String[] args) {
-		Lib.debug(dbgProcess, "UserProcess.load(\"" + name + "\")");
+private boolean load(String name, String[] args) {
+    Lib.debug(dbgProcess, "UserProcess.load(\"" + name + "\")");
 
-		OpenFile executable = ThreadedKernel.fileSystem.open(name, false);
-		if (executable == null) {
-			Lib.debug(dbgProcess, "\topen failed");
-			return false;
-		}
+    /* ---------- open the executable ---------- */
+    OpenFile executable = ThreadedKernel.fileSystem.open(name, /*readOnly=*/false);
+    if (executable == null) {
+        Lib.debug(dbgProcess, "\topen failed");
+        return false;
+    }
+    try {
+        coff = new Coff(executable);
+    } catch (EOFException e) {
+        executable.close();
+        Lib.debug(dbgProcess, "\tcoff load failed");
+        return false;
+    }
 
-		try {
-			coff = new Coff(executable);
-		}
-		catch (EOFException e) {
-			executable.close();
-			Lib.debug(dbgProcess, "\tcoff load failed");
-			return false;
-		}
+    /* ---------- count code/data pages ---------- */
+    numPages = 0;
+    for (int s = 0; s < coff.getNumSections(); s++) {
+        CoffSection sec = coff.getSection(s);
+        if (sec.getFirstVPN() != numPages) {            // must be contiguous
+            coff.close();
+            Lib.debug(dbgProcess, "\tfragmented executable");
+            return false;
+        }
+        numPages += sec.getLength();
+    }
 
-		// make sure the sections are contiguous and start at page 0
-		numPages = 0;
-		for (int s = 0; s < coff.getNumSections(); s++) {
-			CoffSection section = coff.getSection(s);
-			if (section.getFirstVPN() != numPages) {
-				coff.close();
-				Lib.debug(dbgProcess, "\tfragmented executable");
-				return false;
-			}
-			numPages += section.getLength();
-		}
+    /* ---------- make space for stack + arg page ---------- */
+    final int stackVPN   = numPages;            // first stack page
+    final int argVPN     = numPages + stackPages;   // single arg page
+    int totalPages       = numPages + stackPages + 1;
 
-		// Calculate total size needed for arguments
-		int argsSize = 0;
-		for (int i = 0; i < args.length; i++) {
-			argsSize += args[i].length() + 1; // +1 for null terminator
-		}
-		argsSize += (args.length + 1) * 4; // +1 for null terminator, 4 bytes per pointer
+    pageTable = new TranslationEntry[totalPages];
 
-		// Allocate space for arguments
-		int argv = numPages * pageSize - argsSize;
-		byte[] argvData = new byte[argsSize];
-		int dataOffset = 0;
-		int argvOffset = 0;
+    /* ---------- allocate every page up-front ---------- */
+    for (int vpn = 0; vpn < totalPages; vpn++) {
+        int ppn = UserKernel.allocatePage();
+        if (ppn == -1) {                         // out of memory → roll-back
+            for (int i = 0; i < vpn; i++)
+                UserKernel.freePage(pageTable[i].ppn);
+            coff.close();
+            return false;
+        }
+        boolean readOnly = false;               // will be patched for code below
+        pageTable[vpn] = new TranslationEntry(vpn, ppn, true, readOnly,false,false);
+    }
 
-		// Copy argument strings
-		for (int i = 0; i < args.length; i++) {
-			byte[] argBytes = args[i].getBytes();
-			System.arraycopy(argBytes, 0, argvData, dataOffset, argBytes.length);
-			argvData[dataOffset + argBytes.length] = 0; // null terminator
-			writeVirtualMemory(argv + argvOffset, Lib.bytesFromInt(dataOffset));
-			dataOffset += argBytes.length + 1;
-			argvOffset += 4;
-		}
-		writeVirtualMemory(argv + argvOffset, Lib.bytesFromInt(0)); // null terminator for argv
+    /* ---------- mark text / rodata pages read-only & copy them ---------- */
+    for (int s = 0; s < coff.getNumSections(); s++) {
+        CoffSection sec = coff.getSection(s);
+        for (int i = 0; i < sec.getLength(); i++) {
+            int vpn = sec.getFirstVPN() + i;
+            pageTable[vpn].readOnly = sec.isReadOnly();
+            sec.loadPage(i, pageTable[vpn].ppn);
+        }
+    }
 
-		// Copy argument data
-		writeVirtualMemory(argv - argsSize, argvData);
+    /* ---------- build the argument page ---------- */
+    /* pack: [argv[] table][strings...] inside the very last page            */
+    int argStringsSize = 0;
+    for (String a : args) argStringsSize += a.length() + 1;   // +1 for '\0'
+    int argvTableSize  = 4 * (args.length + 1);               // +NULL entry
+    if (argvTableSize + argStringsSize > pageSize) {          // won’t fit
+        coff.close();
+        return false;
+    }
 
-		// program counter initially points at the program entry point
-		initialPC = coff.getEntryPoint();
+    initialPC = coff.getEntryPoint();
+    initialSP = stackVPN * pageSize + stackPages * pageSize;  // very top of stack
+    argc      = args.length;
+    argv      = argVPN * pageSize;                            // start of table
 
-		// next comes the stack; stack pointer initially points to top of it
-		numPages += stackPages;
-		initialSP = numPages * pageSize;
-		argc = args.length;
+    int       entry      = argv;                              // table pointer
+    int       strOffset  = argv + argvTableSize;              // first string
 
-		// finally, reserve 1 page for arguments; but just use the top
-		for (int i = 0; i < numPages; i++) {
-			int ppn = UserKernel.allocatePage();
-			if (ppn == -1) {
-				coff.close();
-				Lib.debug(dbgProcess, "\tinsufficient physical memory");
-				return false;
-			}
-			pageTable[i] = new TranslationEntry(i, ppn, true, false, false, false);
-		}
+    for (String a : args) {
+        /* write argv[i] */
+        Lib.bytesFromInt(wordBuf, 0, strOffset);
+        Lib.assertTrue(writeVirtualMemory(entry, wordBuf) == 4);
+        entry += 4;
 
-		// load sections
-		if (!loadSections()) {
-			coff.close();
-			Lib.debug(dbgProcess, "\tloadSections failed");
-			return false;
-		}
+        /* write actual string + NUL */
+        byte[] asBytes = (a + '\0').getBytes();
+        Lib.assertTrue(writeVirtualMemory(strOffset, asBytes) == asBytes.length);
+        strOffset += asBytes.length;
+    }
+    /* argv[argc] = NULL */
+    Lib.bytesFromInt(wordBuf, 0, 0);
+    Lib.assertTrue(writeVirtualMemory(entry, wordBuf) == 4);
 
-		return true;
-	}
+    return true;
+}
+
+/* small scratch buffer to avoid reallocating every int */
+private static final byte[] wordBuf = new byte[4];
+
 
 	/**
 	 * Release any resources allocated by <tt>load()</tt>.
@@ -387,10 +417,12 @@ public class UserProcess {
 	 * Handle the halt() system call.
 	 */
 	private int handleHalt() {
+		// Only root process (PID 0) can halt
+		if (pid != 0)
+			return -1;
+			
 		Lib.debug(dbgProcess, "UserProcess.handleHalt");
-
 		Machine.halt();
-
 		Lib.assertNotReached("Machine.halt() did not halt machine!");
 		return 0;
 	}
@@ -405,6 +437,13 @@ public class UserProcess {
 		// can grade your implementation.
 
 		Lib.debug(dbgProcess, "UserProcess.handleExit (" + status + ")");
+		
+		// Store exit status
+		exitLock.acquire();
+		exitStatus = status;
+		hasExited = true;
+		exitCondition.wake();
+		exitLock.release();
 		
 		// Close all open files
 		for (int i = 0; i < fileTable.length; i++) {
@@ -422,6 +461,11 @@ public class UserProcess {
 			coff.close();
 			coff = null;
 		}
+		
+		
+		// If this is the last process, terminate the kernel
+		if (processes.isEmpty())
+			Kernel.kernel.terminate();
 		
 		// Finish the thread
 		thread.finish();
@@ -542,9 +586,9 @@ public class UserProcess {
 
 	private int handleExec(int nameAddr, int argc, int argvAddr) {
 		// Read the executable name
-	String name = readVirtualMemoryString(nameAddr, 256);
-    if (name == null || !name.endsWith(".coff"))
-        return -1;
+		String name = readVirtualMemoryString(nameAddr, 256);
+		if (name == null || !name.endsWith(".coff"))
+			return -1;
 		
 		// Read the arguments
 		String[] args = new String[argc];
@@ -562,12 +606,49 @@ public class UserProcess {
 		}
 		
 		// Create new process
- UserProcess child = newUserProcess();
-    if (!child.execute(name, args))
-        return -1;
+		UserProcess child = newUserProcess();
+		child.setParent(this);
+		
+		if (!child.execute(name, args))
+			return -1;
 
-    return child.getPID();
+		return child.getPID();
 	}
+
+	private int handleJoin(int pid, int statusAddr) {
+    // 1. locate the child among *all* processes
+    UserProcess child = null;
+    for (UserProcess p : processes)
+        if (p.pid == pid && p.parent == this) { child = p; break; }
+
+    if (child == null) return -1;      // not a child of this process
+
+    /* 2. wait until that child sets hasExited = true */
+    child.exitLock.acquire();
+    while (!child.hasExited) child.exitCondition.sleep();
+
+    /* 3. give status back to parent (if pointer supplied) */
+    if (statusAddr != 0) {
+        byte[] bytes = Lib.bytesFromInt(child.exitStatus);
+        if (writeVirtualMemory(statusAddr, bytes) != 4) {
+            child.exitLock.release();
+            return -1;
+        }
+    }
+    child.exitLock.release();
+
+    /* 4. now it is safe to forget the child object */
+    processes.remove(child);
+
+    /* 5. if every remaining process in the system has exited,
+          shut the machine down */
+    boolean everyoneGone = true;
+    for (UserProcess p : processes)
+        if (!p.hasExited) { everyoneGone = false; break; }
+    if (everyoneGone) Kernel.kernel.terminate();
+
+    return 1;                          // join succeeded
+}
 
 	private static final int syscallHalt = 0, syscallExit = 1, syscallExec = 2,
 			syscallJoin = 3, syscallCreate = 4, syscallOpen = 5,
@@ -643,6 +724,8 @@ public class UserProcess {
 			return handleExit(a0);
 		case syscallExec:
 			return handleExec(a0, a1, a2);
+		case syscallJoin:
+			return handleJoin(a0, a2);
 		case syscallCreate:
 			return handleCreate(a0);
 		case syscallOpen:
@@ -712,11 +795,16 @@ public class UserProcess {
 	private static final int pageSize = Processor.pageSize;
 
 	private static final char dbgProcess = 'a';
-	// Process ID management
-private static int nextPID = 1;
-private int pid;
 
-public int getPID() {
-    return pid;
-}
+	public int getPID() {
+		return pid;
+	}
+
+	public void setParent(UserProcess parent) {
+		this.parent = parent;
+	}
+
+	public UserProcess getParent() {
+		return parent;
+	}
 }

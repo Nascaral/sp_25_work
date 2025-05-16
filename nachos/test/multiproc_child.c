@@ -1,52 +1,35 @@
+
 #include "syscall.h"
 
-#define BUFFER_SIZE 1024  // 1 page worth of data
+#define BUFFER_SIZE 1024
 
-int main(int argc, char *argv[]) {
-    char buffer[BUFFER_SIZE];
-    int i;
-    int processNum;
-    
-    // Check arguments
-    if (argc != 2) {
-        write(fdStandardOutput, "Error: Invalid number of arguments\n", 34);
+int
+main(int argc, char *argv[])
+{
+    if (argc != 1) {                     /* exactly one argument */
+        write(fdStandardOutput,
+              "Error: Invalid number of arguments\n", 34);
         exit(1);
     }
-    
-    // Get process number from argument
-    processNum = argv[1][0] - '0';
-    
-    // Fill buffer with process-specific data
-    for (i = 0; i < BUFFER_SIZE - 1; i++) {
-        buffer[i] = 'A' + processNum;
-    }
-    buffer[BUFFER_SIZE - 1] = '\0';
-    
-    // Create a unique file for this process
-    char filename[20];
-    for (i = 0; i < 19; i++) {
-        filename[i] = '0' + processNum;
-    }
-    filename[19] = '\0';
-    
-    // Write to file
+
+    int procNum = argv[0][0] - '0';
+
+    char buf[BUFFER_SIZE];
+    int i;
+    for (i = 0; i < BUFFER_SIZE - 1; ++i)
+        buf[i] = 'A' + procNum;
+    buf[BUFFER_SIZE-1] = '\0';
+
+    char filename[] = { 'f','i','l','e','_',
+                        (char)('0' + procNum), '\0' };
+
     int fd = creat(filename);
     if (fd < 0) {
-        write(fdStandardOutput, "Error: Failed to create file\n", 29);
+        write(fdStandardOutput, "Error: creat failed\n", 20);
         exit(1);
     }
-    
-    // Write buffer to file
-    int bytesWritten = write(fd, buffer, BUFFER_SIZE);
-    if (bytesWritten != BUFFER_SIZE) {
-        write(fdStandardOutput, "Error: Failed to write complete buffer\n", 38);
-        close(fd);
-        exit(1);
-    }
-    
-    // Close file
+    write(fd, buf, BUFFER_SIZE);
     close(fd);
-    
-    // Exit with process number as status
-    exit(processNum);
-} 
+
+    exit(procNum);                       /* return status == procNum */
+}
