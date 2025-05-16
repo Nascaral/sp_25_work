@@ -38,6 +38,7 @@ public class UserProcess {
 	private boolean hasExited = false;
 	private Lock exitLock = new Lock();
 	private Condition2 exitCondition = new Condition2(exitLock);
+	private List<UserProcess> childProcesses = new ArrayList<>();
 
 	public UserProcess() {
 		int numPhysPages = Machine.processor().getNumPhysPages();
@@ -242,104 +243,91 @@ public class UserProcess {
 	 * @param args the arguments to pass to the executable.
 	 * @return <tt>true</tt> if the executable was successfully loaded.
 	 */
-private boolean load(String name, String[] args) {
-    Lib.debug(dbgProcess, "UserProcess.load(\"" + name + "\")");
+	private boolean load(String name, String[] args) {
+		Lib.debug(dbgProcess, "UserProcess.load(\"" + name + "\")");
 
-    /* ---------- open the executable ---------- */
-    OpenFile executable = ThreadedKernel.fileSystem.open(name, /*readOnly=*/false);
-    if (executable == null) {
-        Lib.debug(dbgProcess, "\topen failed");
-        return false;
-    }
-    try {
-        coff = new Coff(executable);
-    } catch (EOFException e) {
-        executable.close();
-        Lib.debug(dbgProcess, "\tcoff load failed");
-        return false;
-    }
+		OpenFile executable = ThreadedKernel.fileSystem.open(name, false);
+		if (executable == null) {
+			Lib.debug(dbgProcess, "\topen failed");
+			return false;
+		}
 
-    /* ---------- count code/data pages ---------- */
-    numPages = 0;
-    for (int s = 0; s < coff.getNumSections(); s++) {
-        CoffSection sec = coff.getSection(s);
-        if (sec.getFirstVPN() != numPages) {            // must be contiguous
-            coff.close();
-            Lib.debug(dbgProcess, "\tfragmented executable");
-            return false;
-        }
-        numPages += sec.getLength();
-    }
+		try {
+			coff = new Coff(executable);
+		}
+		catch (EOFException e) {
+			executable.close();
+			Lib.debug(dbgProcess, "\tcoff load failed");
+			return false;
+		}
 
-    /* ---------- make space for stack + arg page ---------- */
-    final int stackVPN   = numPages;            // first stack page
-    final int argVPN     = numPages + stackPages;   // single arg page
-    int totalPages       = numPages + stackPages + 1;
+		// make sure the sections are contiguous and start at page 0
+		numPages = 0;
+		for (int s = 0; s < coff.getNumSections(); s++) {
+			CoffSection section = coff.getSection(s);
+			if (section.getFirstVPN() != numPages) {
+				coff.close();
+				Lib.debug(dbgProcess, "\tfragmented executable");
+				return false;
+			}
+			numPages += section.getLength();
+		}
 
-    pageTable = new TranslationEntry[totalPages];
+		// Calculate total size needed for arguments
+		int argsSize = 0;
+		for (int i = 0; i < args.length; i++) {
+			argsSize += args[i].length() + 1; // +1 for null terminator
+		}
+		argsSize += (args.length + 1) * 4; // +1 for null terminator, 4 bytes per pointer
 
-    /* ---------- allocate every page up-front ---------- */
-    for (int vpn = 0; vpn < totalPages; vpn++) {
-        int ppn = UserKernel.allocatePage();
-        if (ppn == -1) {                         // out of memory → roll-back
-            for (int i = 0; i < vpn; i++)
-                UserKernel.freePage(pageTable[i].ppn);
-            coff.close();
-            return false;
-        }
-        boolean readOnly = false;               // will be patched for code below
-        pageTable[vpn] = new TranslationEntry(vpn, ppn, true, readOnly,false,false);
-    }
+		// Allocate space for arguments
+		int argv = numPages * pageSize - argsSize;
+		byte[] argvData = new byte[argsSize];
+		int dataOffset = 0;
+		int argvOffset = 0;
 
-    /* ---------- mark text / rodata pages read-only & copy them ---------- */
-    for (int s = 0; s < coff.getNumSections(); s++) {
-        CoffSection sec = coff.getSection(s);
-        for (int i = 0; i < sec.getLength(); i++) {
-            int vpn = sec.getFirstVPN() + i;
-            pageTable[vpn].readOnly = sec.isReadOnly();
-            sec.loadPage(i, pageTable[vpn].ppn);
-        }
-    }
+		// Copy argument strings
+		for (int i = 0; i < args.length; i++) {
+			byte[] argBytes = args[i].getBytes();
+			System.arraycopy(argBytes, 0, argvData, dataOffset, argBytes.length);
+			argvData[dataOffset + argBytes.length] = 0; // null terminator
+			writeVirtualMemory(argv + argvOffset, Lib.bytesFromInt(dataOffset));
+			dataOffset += argBytes.length + 1;
+			argvOffset += 4;
+		}
+		writeVirtualMemory(argv + argvOffset, Lib.bytesFromInt(0)); // null terminator for argv
 
-    /* ---------- build the argument page ---------- */
-    /* pack: [argv[] table][strings...] inside the very last page            */
-    int argStringsSize = 0;
-    for (String a : args) argStringsSize += a.length() + 1;   // +1 for '\0'
-    int argvTableSize  = 4 * (args.length + 1);               // +NULL entry
-    if (argvTableSize + argStringsSize > pageSize) {          // won’t fit
-        coff.close();
-        return false;
-    }
+		// Copy argument data
+		writeVirtualMemory(argv - argsSize, argvData);
 
-    initialPC = coff.getEntryPoint();
-    initialSP = stackVPN * pageSize + stackPages * pageSize;  // very top of stack
-    argc      = args.length;
-    argv      = argVPN * pageSize;                            // start of table
+		// program counter initially points at the program entry point
+		initialPC = coff.getEntryPoint();
 
-    int       entry      = argv;                              // table pointer
-    int       strOffset  = argv + argvTableSize;              // first string
+		// next comes the stack; stack pointer initially points to top of it
+		numPages += stackPages;
+		initialSP = numPages * pageSize;
+		argc = args.length;
 
-    for (String a : args) {
-        /* write argv[i] */
-        Lib.bytesFromInt(wordBuf, 0, strOffset);
-        Lib.assertTrue(writeVirtualMemory(entry, wordBuf) == 4);
-        entry += 4;
+		// finally, reserve 1 page for arguments; but just use the top
+		for (int i = 0; i < numPages; i++) {
+			int ppn = UserKernel.allocatePage();
+			if (ppn == -1) {
+				coff.close();
+				Lib.debug(dbgProcess, "\tinsufficient physical memory");
+				return false;
+			}
+			pageTable[i] = new TranslationEntry(i, ppn, true, false, false, false);
+		}
 
-        /* write actual string + NUL */
-        byte[] asBytes = (a + '\0').getBytes();
-        Lib.assertTrue(writeVirtualMemory(strOffset, asBytes) == asBytes.length);
-        strOffset += asBytes.length;
-    }
-    /* argv[argc] = NULL */
-    Lib.bytesFromInt(wordBuf, 0, 0);
-    Lib.assertTrue(writeVirtualMemory(entry, wordBuf) == 4);
+		// load sections
+		if (!loadSections()) {
+			coff.close();
+			Lib.debug(dbgProcess, "\tloadSections failed");
+			return false;
+		}
 
-    return true;
-}
-
-/* small scratch buffer to avoid reallocating every int */
-private static final byte[] wordBuf = new byte[4];
-
+		return true;
+	}
 
 	/**
 	 * Release any resources allocated by <tt>load()</tt>.
@@ -462,6 +450,8 @@ private static final byte[] wordBuf = new byte[4];
 			coff = null;
 		}
 		
+		// Remove from process list
+		processes.remove(this);
 		
 		// If this is the last process, terminate the kernel
 		if (processes.isEmpty())
@@ -608,6 +598,8 @@ private static final byte[] wordBuf = new byte[4];
 		// Create new process
 		UserProcess child = newUserProcess();
 		child.setParent(this);
+
+		this.childProcesses.add(child);
 		
 		if (!child.execute(name, args))
 			return -1;
@@ -615,39 +607,65 @@ private static final byte[] wordBuf = new byte[4];
 		return child.getPID();
 	}
 
-	private int handleJoin(int pid, int statusAddr) {
-    // 1. locate the child among *all* processes
+
+private int handleJoin(int pid, int statusAddr) {
+    // Debug output
+    Lib.debug(dbgProcess, "handleJoin called with pid=" + pid + ", statusAddr=" + statusAddr);
+    
+    // Find the child process
     UserProcess child = null;
-    for (UserProcess p : processes)
-        if (p.pid == pid && p.parent == this) { child = p; break; }
-
-    if (child == null) return -1;      // not a child of this process
-
-    /* 2. wait until that child sets hasExited = true */
-    child.exitLock.acquire();
-    while (!child.hasExited) child.exitCondition.sleep();
-
-    /* 3. give status back to parent (if pointer supplied) */
-    if (statusAddr != 0) {
-        byte[] bytes = Lib.bytesFromInt(child.exitStatus);
-        if (writeVirtualMemory(statusAddr, bytes) != 4) {
-            child.exitLock.release();
-            return -1;
+    for (UserProcess p : this.childProcesses) {
+        if (p.getPID() == pid) {
+            child = p;
+            break;
         }
     }
+
+    // If not a child of this process, return -1
+    if (child == null) {
+        Lib.debug(dbgProcess, "handleJoin: PID " + pid + " is not a child of this process");
+        return -1;
+    }
+    
+    Lib.debug(dbgProcess, "handleJoin: Found child process with PID " + pid);
+
+    // Wait for the child to exit
+    child.exitLock.acquire();
+    while (!child.hasExited) {
+        Lib.debug(dbgProcess, "handleJoin: Waiting for child " + pid + " to exit");
+        child.exitCondition.sleep();
+    }
+    
+    int childExitStatus = child.exitStatus;
+    Lib.debug(dbgProcess, "handleJoin: Child " + pid + " exited with status " + childExitStatus);
     child.exitLock.release();
 
-    /* 4. now it is safe to forget the child object */
-    processes.remove(child);
+    // Check if statusAddr is 0 (NULL pointer check)
+    if (statusAddr == 0) {
+        Lib.debug(dbgProcess, "handleJoin: statusAddr is NULL, ignoring status write");
+        childProcesses.remove(child);
+        return 1;
+    }
 
-    /* 5. if every remaining process in the system has exited,
-          shut the machine down */
-    boolean everyoneGone = true;
-    for (UserProcess p : processes)
-        if (!p.hasExited) { everyoneGone = false; break; }
-    if (everyoneGone) Kernel.kernel.terminate();
+    // Write child's exit status into parent's memory
+    byte[] statusBytes = Lib.bytesFromInt(childExitStatus);
+    Lib.debug(dbgProcess, "handleJoin: Writing status " + childExitStatus + " to address " + statusAddr);
+    
+    int bytesWritten = writeVirtualMemory(statusAddr, statusBytes);
+    Lib.debug(dbgProcess, "handleJoin: Wrote " + bytesWritten + " of 4 bytes");
+    
+    if (bytesWritten != 4) {
+        Lib.debug(dbgProcess, "handleJoin: Write status failed - address might be invalid");
+        // We still complete the join operation, but report the status write failure
+        childProcesses.remove(child);
+        return 1;  // Return success even if status write failed - this matches Unix behavior
+    }
 
-    return 1;                          // join succeeded
+    // Remove child from our list
+    childProcesses.remove(child);
+    
+    Lib.debug(dbgProcess, "handleJoin: Successfully joined with child " + pid);
+    return 1; // Join succeeded
 }
 
 	private static final int syscallHalt = 0, syscallExit = 1, syscallExec = 2,
@@ -750,26 +768,61 @@ private static final byte[] wordBuf = new byte[4];
 	 * The <i>cause</i> argument identifies which exception occurred; see the
 	 * <tt>Processor.exceptionZZZ</tt> constants.
 	 */
-	public void handleException(int cause) {
-		Processor processor = Machine.processor();
+/**
+ * Handle a user exception. Called by <tt>UserKernel.exceptionHandler()</tt>.
+ * The <i>cause</i> argument identifies which exception occurred; see the
+ * <tt>Processor.exceptionZZZ</tt> constants.
+ */
+public void handleException(int cause) {
+    Processor processor = Machine.processor();
 
-		switch (cause) {
-		case Processor.exceptionSyscall:
-			int result = handleSyscall(processor.readRegister(Processor.regV0),
-					processor.readRegister(Processor.regA0),
-					processor.readRegister(Processor.regA1),
-					processor.readRegister(Processor.regA2),
-					processor.readRegister(Processor.regA3));
-			processor.writeRegister(Processor.regV0, result);
-			processor.advancePC();
-			break;
+    switch (cause) {
+    case Processor.exceptionSyscall:
+        int result = handleSyscall(processor.readRegister(Processor.regV0),
+                processor.readRegister(Processor.regA0),
+                processor.readRegister(Processor.regA1),
+                processor.readRegister(Processor.regA2),
+                processor.readRegister(Processor.regA3));
+        processor.writeRegister(Processor.regV0, result);
+        processor.advancePC();
+        break;
 
-		default:
-			Lib.debug(dbgProcess, "Unexpected exception: "
-					+ Processor.exceptionNames[cause]);
-			Lib.assertNotReached("Unexpected exception");
-		}
-	}
+    case Processor.exceptionAddressError:
+        Lib.debug(dbgProcess, "Address error exception");
+        handleExit(-1); // Exit with an error status
+        break;
+
+    case Processor.exceptionBusError:
+        Lib.debug(dbgProcess, "Bus error exception");
+        handleExit(-1);
+        break;
+
+    case Processor.exceptionIllegalInstruction:
+        Lib.debug(dbgProcess, "Illegal instruction exception");
+        handleExit(-1);
+        break;
+
+    case Processor.exceptionOverflow:
+        Lib.debug(dbgProcess, "Overflow exception");
+        handleExit(-1);
+        break;
+
+    case Processor.exceptionPageFault:
+        Lib.debug(dbgProcess, "Page fault exception");
+        handleExit(-1);
+        break;
+
+    case Processor.exceptionReadOnly:
+        Lib.debug(dbgProcess, "Read-only exception");
+        handleExit(-1);
+        break;
+
+    default:
+        Lib.debug(dbgProcess, "Unexpected exception: " + Processor.exceptionNames[cause]);
+        handleExit(-1);
+        break;
+    }
+}
 
 	/** The program being run by this process. */
 	protected Coff coff;
@@ -791,6 +844,9 @@ private static final byte[] wordBuf = new byte[4];
 
 	/** The arguments to the program. */
 	private int argc, argv;
+
+
+
 
 	private static final int pageSize = Processor.pageSize;
 
