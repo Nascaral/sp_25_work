@@ -138,19 +138,20 @@ public class UserKernel extends ThreadedKernel {
 	 * 
 	 * @return the physical page number, or -1 if no pages are available.
 	 */
-	public static int allocatePage() {
-		pageLock.acquire();
-		int page = -1;
-		for (int i = 0; i < freePages.length; i++) {
-			if (freePages[i]) {
-				freePages[i] = false;
-				page = i;
-				break;
-			}
-		}
-		pageLock.release();
-		return page;
-	}
+public static int allocatePage() {
+    pageLock.acquire();
+    int page = -1;
+    // Reverse allocation to test non-contiguous page assignment
+    for (int i = freePages.length - 1; i >= 0; i--) {
+        if (freePages[i]) {
+            freePages[i] = false;
+            page = i;
+            break;
+        }
+    }
+    pageLock.release();
+    return page;
+}
 
 	/**
 	 * Free a physical page.
