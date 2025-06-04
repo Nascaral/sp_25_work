@@ -42,9 +42,7 @@ public class UserProcess {
 
 	public UserProcess() {
 		int numPhysPages = Machine.processor().getNumPhysPages();
-		pageTable = new TranslationEntry[numPhysPages];
-		for (int i = 0; i < numPhysPages; i++)
-			pageTable[i] = new TranslationEntry(i, i, true, false, false, false);
+		pageTable = new TranslationEntry[0];
 		fileTable[0] = UserKernel.console.openForReading();
 		fileTable[1] = UserKernel.console.openForWriting();
 		
@@ -209,7 +207,7 @@ public class UserProcess {
 	 * memory.
 	 * @return the number of bytes successfully transferred.
 	 */
-	public int writeVirtualMemory(int vaddr, byte[] data, int offset, int length) {
+	public int Memory(int vaddr, byte[] data, int offset, int length) {
 		Lib.assertTrue(offset >= 0 && length >= 0 && offset + length <= data.length);
 		byte[] memory = Machine.processor().getMemory();
 		int bytesCopied = 0;
@@ -280,51 +278,71 @@ public class UserProcess {
 		}
 		argsSize += (args.length + 1) * 4; // +1 for null terminator, 4 bytes per pointer
 
-		// Allocate space for arguments
-		int argv = numPages * pageSize - argsSize;
-		byte[] argvData = new byte[argsSize];
-		int dataOffset = 0;
-		int argvOffset = 0;
+numPages += stackPages;
+initialSP = numPages * pageSize;
 
-		// Copy argument strings
-		for (int i = 0; i < args.length; i++) {
-			byte[] argBytes = args[i].getBytes();
-			System.arraycopy(argBytes, 0, argvData, dataOffset, argBytes.length);
-			argvData[dataOffset + argBytes.length] = 0; // null terminator
-			writeVirtualMemory(argv + argvOffset, Lib.bytesFromInt(dataOffset));
-			dataOffset += argBytes.length + 1;
-			argvOffset += 4;
-		}
-		writeVirtualMemory(argv + argvOffset, Lib.bytesFromInt(0)); // null terminator for argv
+pageTable = new TranslationEntry[numPages];
 
-		// Copy argument data
-		writeVirtualMemory(argv - argsSize, argvData);
+// Allocate pages first
+for (int i = 0; i < numPages; i++) {
+    int ppn = UserKernel.allocatePage();
+    if (ppn == -1) {
+        coff.close();
+        Lib.debug(dbgProcess, "\tinsufficient physical memory");
+        return false;
+    }
+    pageTable[i] = new TranslationEntry(i, ppn, true, false, false, false);
+}
 
-		// program counter initially points at the program entry point
-		initialPC = coff.getEntryPoint();
-
-		// next comes the stack; stack pointer initially points to top of it
-		numPages += stackPages;
-		initialSP = numPages * pageSize;
-		argc = args.length;
-
-		// finally, reserve 1 page for arguments; but just use the top
-		for (int i = 0; i < numPages; i++) {
-			int ppn = UserKernel.allocatePage();
-			if (ppn == -1) {
-				coff.close();
-				Lib.debug(dbgProcess, "\tinsufficient physical memory");
-				return false;
-			}
-			pageTable[i] = new TranslationEntry(i, ppn, true, false, false, false);
-		}
-
-		// load sections
-		if (!loadSections()) {
+				if (!loadSections()) {
 			coff.close();
 			Lib.debug(dbgProcess, "\tloadSections failed");
 			return false;
 		}
+
+			argv = numPages * pageSize - argsSize;
+		byte[] stringData = new byte[argsSize];
+		int stringOffset = (args.length + 1) * 4; // Start after argv array
+
+// Calculate total size needed for arguments
+int argsSize = 0;
+for (int i = 0; i < args.length; i++) {
+    argsSize += args[i].length() + 1; // +1 for null terminator
+}
+argsSize += (args.length + 1) * 4; // +1 for null terminator, 4 bytes per pointer
+
+// Check if arguments fit in available space
+if (argsSize > pageSize) {
+    coff.close();
+    Lib.debug(dbgProcess, "\targuments too large");
+    return false;
+}
+
+// Place arguments at the top of the last page
+argv = numPages * pageSize - argsSize;
+byte[] stringData = new byte[argsSize];
+int stringOffset = (args.length + 1) * 4; // Start after argv array
+
+// Write argv pointers
+for (int i = 0; i < args.length; i++) {
+    byte[] argBytes = args[i].getBytes();
+    System.arraycopy(argBytes, 0, stringData, stringOffset, argBytes.length);
+    stringData[stringOffset + argBytes.length] = 0; // null terminator
+    
+    writeVirtualMemory(argv + i * 4, Lib.bytesFromInt(argv + stringOffset));
+    stringOffset += argBytes.length + 1;
+}
+writeVirtualMemory(argv + args.length * 4, Lib.bytesFromInt(0)); // null terminator
+
+// Write string data
+writeVirtualMemory(argv + (args.length + 1) * 4, stringData, (args.length + 1) * 4, stringOffset - (args.length + 1) * 4);
+
+argc = args.length;
+		
+		// Resize page table to correct size
+		pageTable = new TranslationEntry[numPages + stackPages];
+
+		initialPC = coff.getEntryPoint();
 
 		return true;
 	}
@@ -516,6 +534,12 @@ public class UserProcess {
 
 		if (size < 0)
 			return -1;
+		if (size > 0) {
+			byte[] testByte = new byte[1];
+			if (writeVirtualMemory(bufferAddr, testByte, 0, 1) != 1) {
+				return -1; 
+			}
+		}
 
 		byte[] buffer = new byte[size];
 		int bytesRead = fileTable[fd].read(buffer, 0, size);
@@ -538,6 +562,13 @@ public class UserProcess {
 
 		if (size < 0)
 			return -1;
+
+		if (size > 0) {
+			byte[] testByte = new byte[1];
+			if (readVirtualMemory(bufferAddr, testByte, 0, 1) != 1) {
+				return -1; 
+			}
+		}
 
 		byte[] buffer = new byte[size];
 		int bytesRead = readVirtualMemory(bufferAddr, buffer, 0, size);
@@ -658,14 +689,14 @@ private int handleJoin(int pid, int statusAddr) {
         Lib.debug(dbgProcess, "handleJoin: Write status failed - address might be invalid");
         // We still complete the join operation, but report the status write failure
         childProcesses.remove(child);
-        return 1;  // Return success even if status write failed - this matches Unix behavior
+        return 0;  
     }
 
     // Remove child from our list
     childProcesses.remove(child);
     
     Lib.debug(dbgProcess, "handleJoin: Successfully joined with child " + pid);
-    return 1; // Join succeeded
+    return 0; // Join succeeded
 }
 
 	private static final int syscallHalt = 0, syscallExit = 1, syscallExec = 2,
