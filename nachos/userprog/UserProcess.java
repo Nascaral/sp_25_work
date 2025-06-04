@@ -1,8 +1,4 @@
-diff --git a/nachos/userprog/UserProcess.java b/nachos/userprog/UserProcess.java
-index bdf5b0466e37547c32acdf44fe3c83950e8c96e0..db57f904084e8866a0104298e6c950cb1b94e346 100644
---- a/nachos/userprog/UserProcess.java
-+++ b/nachos/userprog/UserProcess.java
-@@ -4,104 +4,109 @@ import nachos.machine.*;
+import nachos.machine.*;
  import nachos.threads.*;
  import nachos.userprog.*;
  import nachos.vm.*;
